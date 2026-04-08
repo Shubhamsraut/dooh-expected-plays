@@ -30,13 +30,19 @@ Where:
 
 ## 📂 Input Requirements
 
-Upload an Excel file with the following columns:
+Upload an Excel file containing the following required columns:
 
-- `Units`
-- `Loop Duration (Sec)`
-- `Operating Hours` (e.g. `08:00-22:00`)
+- **Units** → Number of screens at the location  
+- **Loop Duration (Sec)** → Ad loop duration in seconds  
+- **Operating Hours** → Screen active hours (format: `HH:MM-HH:MM`, e.g., `08:00-22:00`)
+
+⚠️ **Note:**
+- Column names must match exactly as above  
+- Column order/position does **not matter**  
+- Additional columns are allowed and will be preserved in the output
 
 ---
+
 
 ## 🛠️ Tech Stack
 
