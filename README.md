@@ -60,8 +60,6 @@ A clean and interactive Streamlit app to **estimate expected ad plays** across D
 
 ## 🚀 Run Locally
 
-## 🚀 Run Locally
-
 ```bash
 pip install -r requirements.txt
 streamlit run expected_adplays.py
