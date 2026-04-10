@@ -279,8 +279,9 @@ def overlap_hours(screen_start, screen_end, slot_start, slot_end):
 def build_campaign_dates(start_date, end_date):
     return pd.date_range(start=start_date, end=end_date, freq="D")
 
+# NEW
 def validate_columns(df):
-    return [c for c in ["Units","Loop Duration (Sec)","Operating Hours"] if c not in df.columns]
+    return [c for c in ["Units","Loop Duration (Sec)","Slot Duration (Sec)","SOV (%)","Operating Hours"] if c not in df.columns]
 
 def grid_to_slots(grid_df):
     slots = []
@@ -298,27 +299,40 @@ def grid_to_slots(grid_df):
     return pd.DataFrame(slots, columns=["Day","Start","End"])
 
 def calculate_expected_plays(screen_df, grid_df, start_date, end_date):
+    import math
     schedule_slots = grid_to_slots(grid_df)
     date_range = build_campaign_dates(start_date, end_date)
     rows = []
     for _, row in screen_df.iterrows():
-        units = pd.to_numeric(row.get("Units", 0), errors="coerce")
-        loop_duration = pd.to_numeric(row.get("Loop Duration (Sec)", 0), errors="coerce")
+        units        = pd.to_numeric(row.get("Units", 0), errors="coerce")
+        loop_dur     = pd.to_numeric(row.get("Loop Duration (Sec)", 0), errors="coerce")
+        slot_dur     = pd.to_numeric(row.get("Slot Duration (Sec)", 0), errors="coerce")
+        sov_raw      = pd.to_numeric(row.get("SOV (%)", 0), errors="coerce")
+        sov          = min(sov_raw / 100.0, 1.0) if pd.notna(sov_raw) else 0.0
         op_start, op_end = parse_operating_hours(row.get("Operating Hours"))
+
         total_overlap = 0.0
-        if pd.notna(units) and pd.notna(loop_duration) and loop_duration and op_start and op_end:
+        expected = 0.0
+
+        valid = all(pd.notna(v) and v > 0 for v in [units, loop_dur, slot_dur]) and sov > 0 and op_start and op_end
+        if valid:
             for day in date_range:
                 weekday = day.strftime("%A")
                 for _, slot in schedule_slots[schedule_slots["Day"] == weekday].iterrows():
                     total_overlap += overlap_hours(op_start, op_end, parse_hhmm(slot["Start"]), parse_hhmm(slot["End"]))
-            expected = (3600 / loop_duration) * total_overlap * units
-        else:
-            expected = 0.0
+
+            total_slots_per_loop  = loop_dur / slot_dur
+            slots_allocated       = math.ceil(total_slots_per_loop * sov)
+            loops_per_hour        = 3600 / loop_dur
+            plays_per_hour        = loops_per_hour * slots_allocated
+            expected              = plays_per_hour * total_overlap * units
+
         result_row = row.to_dict()
-        result_row["Expected Plays"] = round(expected, 2)
-        result_row["Campaign Days"] = len(date_range)
-        result_row["Total Overlap Hours"] = round(total_overlap, 2)
+        result_row["Expected Plays"]       = round(expected, 2)
+        result_row["Campaign Days"]        = len(date_range)
+        result_row["Total Overlap Hours"]  = round(total_overlap, 2)
         rows.append(result_row)
+
     result_df = pd.DataFrame(rows)
     if "Expected Plays" in result_df.columns:
         result_df = result_df.sort_values("Expected Plays", ascending=False)
@@ -351,12 +365,20 @@ def metric_card(label, value, sub="", accent=False):
 
 # ── Calculation explainer ─────────────────────────────────────────────────────
 def build_explainer(row_data, grid_df, start_date, end_date):
-    units = pd.to_numeric(row_data.get("Units", 0), errors="coerce")
-    loop_duration = pd.to_numeric(row_data.get("Loop Duration (Sec)", 0), errors="coerce")
+    import math
+    units        = pd.to_numeric(row_data.get("Units", 0), errors="coerce")
+    loop_dur     = pd.to_numeric(row_data.get("Loop Duration (Sec)", 0), errors="coerce")
+    slot_dur     = pd.to_numeric(row_data.get("Slot Duration (Sec)", 0), errors="coerce")
+    sov_raw      = pd.to_numeric(row_data.get("SOV (%)", 0), errors="coerce")
+    sov          = min(sov_raw / 100.0, 1.0) if pd.notna(sov_raw) else 0.0
     op_hours_raw = row_data.get("Operating Hours", "")
     op_start, op_end = parse_operating_hours(op_hours_raw)
-    date_range = build_campaign_dates(start_date, end_date)
+    date_range   = build_campaign_dates(start_date, end_date)
     schedule_slots = grid_to_slots(grid_df)
+    total_slots_per_loop = (loop_dur / slot_dur) if (loop_dur and slot_dur) else 0
+    slots_allocated      = math.ceil(total_slots_per_loop * sov) if total_slots_per_loop else 0
+    loops_per_hour       = (3600 / loop_dur) if loop_dur else 0
+    plays_per_hour       = loops_per_hour * slots_allocated
 
     DAYS = ["Monday","Tuesday","Wednesday","Thursday","Friday","Saturday","Sunday"]
     day_overlap = {d: 0.0 for d in DAYS}
@@ -370,7 +392,7 @@ def build_explainer(row_data, grid_df, start_date, end_date):
                 day_overlap[wd] += overlap_hours(op_start, op_end, parse_hhmm(slot["Start"]), parse_hhmm(slot["End"]))
 
     total_overlap   = sum(day_overlap.values())
-    plays_per_hour  = (3600 / loop_duration) if (loop_duration and pd.notna(loop_duration)) else 0
+    plays_per_hour  = loops_per_hour * slots_allocated
     expected        = plays_per_hour * total_overlap * units if (pd.notna(units) and plays_per_hour) else 0
 
     screen_name = next(
@@ -432,7 +454,7 @@ def build_explainer(row_data, grid_df, start_date, end_date):
             <div class="calc-step-num">3</div>
             <div class="calc-step-body">
                 <div class="calc-step-label">Loop Duration → Plays per Hour</div>
-                <div class="calc-step-val">{loop_duration:.0f}s loop &nbsp;→&nbsp; 3600 ÷ {loop_duration:.0f} = {plays_per_hour:.4f} plays / hour</div>
+                <div class="calc-step-val">{loop_dur:.0f}s loop &nbsp;→&nbsp; 3600 ÷ {loop_dur:.0f} = {plays_per_hour:.4f} plays / hour</div>
                 <div class="calc-step-desc">How many times the ad plays in one hour of active screen time.</div>
             </div>
         </div>
@@ -468,9 +490,12 @@ def build_explainer(row_data, grid_df, start_date, end_date):
                 <div class="calc-step-label">Final Formula</div>
                 <div class="calc-step-desc">Combining all values:</div>
                 <div class="formula-box">
-                    <div>Plays / Hour &nbsp;&nbsp;&nbsp;&nbsp;= 3600 ÷ {loop_duration:.0f} &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;= {plays_per_hour:.4f}</div>
-                    <div>Total Overlap &nbsp;&nbsp;&nbsp;= {total_overlap:.4f} hours</div>
-                    <div>Units &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;= {int(units) if pd.notna(units) else 0}</div>
+                    <div>Total Slots/Loop &nbsp;&nbsp;= {loop_dur:.0f} ÷ {slot_dur:.0f} = {total_slots_per_loop:.1f}</div>
+                    <div>Slots Allocated &nbsp;&nbsp;&nbsp;= ceil({total_slots_per_loop:.1f} × {sov*100:.1f}%) = {slots_allocated}</div>
+                    <div>Loops / Hour &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;= 3600 ÷ {loop_dur:.0f} = {loops_per_hour:.4f}</div>
+                    <div>Plays / Hour &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;= {loops_per_hour:.4f} × {slots_allocated} = {plays_per_hour:.4f}</div>
+                    <div>Total Overlap &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;= {total_overlap:.4f} hrs</div>
+                    <div>Units &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;= {int(units) if pd.notna(units) else 0}</div>
                     <div class="final">Expected Plays = {plays_per_hour:.4f} × {total_overlap:.4f} × {int(units) if pd.notna(units) else 0} = <strong>{expected:,.2f}</strong></div>
                 </div>
             </div>
@@ -546,7 +571,7 @@ if step == 1:
 # ── Step 2 — Upload ───────────────────────────────────────────────────────────
 elif step == 2:
     st.markdown('<div class="section-label">Upload Screen Data</div>', unsafe_allow_html=True)
-    st.markdown('<div class="hint">Upload an Excel file with these required columns: <strong>Units</strong>, <strong>Loop Duration (Sec)</strong>, <strong>Operating Hours</strong></div>', unsafe_allow_html=True)
+    st.markdown('<div class="hint">Upload an Excel file with these required columns: <strong>Units</strong>, <strong>Loop Duration (Sec)</strong>, <strong>Slot Duration (Sec)</strong>, <strong>SOV (%)</strong>, <strong>Operating Hours</strong></div>', unsafe_allow_html=True)
 
     uploaded_file = st.file_uploader("", type=["xlsx","xls"], key="uploader", label_visibility="collapsed")
     if uploaded_file is not None:
